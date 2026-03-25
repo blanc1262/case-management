@@ -4,6 +4,68 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Case Management</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      @media print {
+        body {
+          margin: 0;
+          padding: 0;
+          font-size: 12px;
+        }
+
+        .no-print {
+          display: none !important;
+        }
+
+        /* Universal print styles for all browsers */
+        .print-table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+
+        .print-table th,
+        .print-table td {
+          border: 1px solid #000;
+          padding: 8px;
+          text-align: left;
+          vertical-align: top;
+        }
+
+        .print-table th {
+          background-color: #f8f9fa;
+          font-weight: bold;
+          text-align: center;
+        }
+
+        .print-table tr {
+          page-break-inside: avoid;
+        }
+
+        .print-table td {
+          page-break-inside: avoid;
+          word-wrap: break-word;
+        }
+
+        /* Hide navigation and controls */
+        .no-print {
+          display: none !important;
+        }
+
+        /* Ensure table content prints */
+        .print-table * {
+          visibility: visible !important;
+          color: #000 !important;
+        }
+
+        @page {
+          size: A4;
+          margin: 0.5cm;
+        }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

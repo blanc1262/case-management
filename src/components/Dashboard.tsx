@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { CaseGroup, CaseRow, User, SystemBackup } from "../types";
 import { Daisy } from "./Daisy";
+import * as XLSX from "xlsx";
 import {
   Menu,
   X,
@@ -42,10 +43,17 @@ import {
 } from "recharts";
 
 export const Dashboard: React.FC = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+
   const [loggedInUser, setLoggedInUser] = useState<User | null>(null);
   const [activeSection, setActiveSection] = useState<
     "home" | "cases" | "system" | "accounts" | "tracking"
-  >("home");
+  >(() => {
+    // Check if we have navigation state from editor immediately
+    const state = location.state as any;
+    return state?.activeSection || "home";
+  });
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(() => {
     return localStorage.getItem("sidebarCollapsed") === "true";
@@ -55,11 +63,10 @@ export const Dashboard: React.FC = () => {
   const [years, setYears] = useState<string[]>([]);
   const [cases, setCases] = useState<CaseGroup[]>([]);
   const [filterTerm, setFilterTerm] = useState("");
+  const [pageSize, setPageSize] = useState(10);
   const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize] = useState(10);
-  const [editingGroup, setEditingGroup] = useState<CaseGroup | null>(null);
   const [modalType, setModalType] = useState<
-    "alert" | "confirm" | "prompt" | "editor" | null
+    "alert" | "confirm" | "prompt" | null
   >(null);
   const [modalMessage, setModalMessage] = useState("");
   const [modalResolve, setModalResolve] = useState<
@@ -69,7 +76,6 @@ export const Dashboard: React.FC = () => {
   const [trackingYear, setTrackingYear] = useState<string>("");
   const [trackingMonth, setTrackingMonth] = useState<string>("");
 
-  const navigate = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const restoreInputRef = useRef<HTMLInputElement>(null);
 
@@ -86,20 +92,113 @@ export const Dashboard: React.FC = () => {
 
     const storedYears = JSON.parse(localStorage.getItem("years") || "[]");
     setYears(storedYears);
-    if (storedYears.length > 0) {
-      setCurrentYear(storedYears[0]);
-      loadCases(storedYears[0]);
+
+    // Load the saved current year or default to first year
+    const savedCurrentYear = localStorage.getItem("currentYear");
+    const yearToLoad =
+      savedCurrentYear && storedYears.includes(savedCurrentYear)
+        ? savedCurrentYear
+        : storedYears[0];
+
+    if (yearToLoad) {
+      setCurrentYear(yearToLoad);
+      loadCases(yearToLoad);
     }
-  }, [navigate]);
+
+    // Check for navigation state from editor
+    const state = location.state as any;
+    if (state?.goToPage) {
+      setCurrentPage(state.goToPage);
+    } else if (state?.goToLastPage) {
+      // Calculate last page and navigate there (use setTimeout to ensure cases are loaded)
+      setTimeout(() => {
+        const totalPages = Math.max(1, Math.ceil(cases.length / pageSize));
+        setCurrentPage(totalPages);
+      }, 100);
+    }
+  }, [navigate, location.state]);
 
   useEffect(() => {
     localStorage.setItem("sidebarCollapsed", String(isSidebarCollapsed));
   }, [isSidebarCollapsed]);
 
+  useEffect(() => {
+    if (currentYear) {
+      localStorage.setItem("currentYear", currentYear);
+    }
+  }, [currentYear]);
+
+  // Clear new case highlight after 5 seconds
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      localStorage.removeItem("newCaseNumber");
+      // Force re-render by updating a dummy state
+      setCurrentPage((prev) => prev);
+    }, 5000);
+
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Reload cases when returning from editor
+  useEffect(() => {
+    const justAddedCase = localStorage.getItem("justAddedCase");
+
+    if (activeSection === "cases" && currentYear) {
+      if (justAddedCase === "true") {
+        // Clear the flag immediately to prevent multiple reloads
+        localStorage.removeItem("justAddedCase");
+        console.log("Just added case, reloading...");
+      }
+      loadCases(currentYear);
+    }
+  }, [activeSection, currentYear]);
+
   const loadCases = (year: string) => {
     const stored = localStorage.getItem(`cases_${year}`);
     const loadedCases = stored ? JSON.parse(stored) : [];
+    console.log(
+      "Loading cases for year:",
+      year,
+      "Found:",
+      loadedCases.length,
+      "cases",
+    );
+    console.log("Raw stored data:", stored);
+
+    // Check for empty cases
+    const emptyCases = loadedCases.filter(
+      (group: CaseGroup) =>
+        !group ||
+        group.length === 0 ||
+        (group.length === 1 && !group[0].caseNo),
+    );
+    console.log("Empty cases found:", emptyCases.length, emptyCases);
+
+    // Check valid cases
+    const validCases = loadedCases.filter(
+      (group: CaseGroup) => group && group.length > 0 && group[0].caseNo,
+    );
+    console.log("Valid cases found:", validCases.length);
+
+    // Additional verification
+    const verifyStored = localStorage.getItem(`cases_${year}`);
+    console.log(
+      "Verification check:",
+      verifyStored ? JSON.parse(verifyStored).length : "null",
+    );
+
+    // Simple verification - check if new case exists
+    const newCaseNumber = localStorage.getItem("newCaseNumber");
+    if (newCaseNumber) {
+      console.log("Looking for new case:", newCaseNumber);
+      const foundNewCase = loadedCases.find(
+        (group: CaseGroup) => group && group[0]?.caseNo === newCaseNumber,
+      );
+      console.log("New case found:", foundNewCase ? "YES" : "NO");
+    }
+
     setCases(loadedCases);
+    setCurrentYear(year);
     setCurrentPage(1);
   };
 
@@ -180,13 +279,12 @@ export const Dashboard: React.FC = () => {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        if (editingGroup) setEditingGroup(null);
         if (modalType) setModalType(null);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [editingGroup, modalType]);
+  }, [modalType]);
 
   const highlightText = (text: string, term: string) => {
     if (!term || !text) return text;
@@ -376,7 +474,16 @@ export const Dashboard: React.FC = () => {
   };
 
   const filteredGroups = cases.filter((group) => {
+    // Skip empty or invalid groups
+    if (!group || group.length === 0 || !group[0]?.caseNo) {
+      return false;
+    }
+
     const combinedTerm = filterTerm.toLowerCase();
+    if (!combinedTerm) {
+      return true; // Show all valid cases when no search term
+    }
+
     return group.some((row) =>
       Object.values(row).some((v) =>
         String(v).toLowerCase().includes(combinedTerm),
@@ -397,10 +504,8 @@ export const Dashboard: React.FC = () => {
       if (p.trim() === "" && idx === 0) return null;
       let content = p.trim();
       if (term) {
-        const regex = new RegExp(
-          `(${term.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&")})`,
-          "gi",
-        );
+        const escapedTerm = term.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
+        const regex = new RegExp(`(${escapedTerm})`, "gi");
         const highlighted = content.split(regex).map((part, i) =>
           regex.test(part) ? (
             <mark key={i} className="bg-rose-100 text-rose-700 px-0.5 rounded">
@@ -426,19 +531,107 @@ export const Dashboard: React.FC = () => {
     });
   };
 
-  const handleSaveEditor = (updatedGroup: CaseGroup) => {
-    const idx = cases.indexOf(editingGroup!);
-    if (idx !== -1) {
-      const updatedCases = [...cases];
-      updatedCases[idx] = updatedGroup;
-      setCases(updatedCases);
-      localStorage.setItem(
-        `cases_${currentYear}`,
-        JSON.stringify(updatedCases),
-      );
-      showAlert("✅ Changes saved to Local Storage!");
+  const handleEditCase = (group: CaseGroup) => {
+    // Store the editing group and current year in localStorage for the editor page to access
+    localStorage.setItem("editingGroup", JSON.stringify(group));
+    localStorage.setItem("currentYear", currentYear);
+    navigate("/editor");
+  };
+
+  const handleExportExcel = () => {
+    if (!currentYear || cases.length === 0) {
+      showAlert("No data available to export!");
+      return;
     }
-    setEditingGroup(null);
+
+    // Flatten all case rows
+    const allRows = cases.flat();
+
+    // Create worksheet data
+    const worksheetData = [
+      [
+        "Case No.",
+        "Program",
+        "Name",
+        "Address",
+        "Filed Cases",
+        "Complainant",
+        "Nature",
+        "Remarks",
+        "Status",
+      ],
+      ...allRows.map((row) => [
+        row.caseNo,
+        row.program,
+        row.name,
+        row.address,
+        row.filedCases,
+        row.complainant,
+        row.nature,
+        row.remarks,
+        row.status,
+      ]),
+    ];
+
+    // Create workbook and worksheet
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(worksheetData);
+
+    // Set column widths
+    const colWidths = [
+      { wch: 15 }, // Case No.
+      { wch: 20 }, // Program
+      { wch: 25 }, // Name
+      { wch: 30 }, // Address
+      { wch: 15 }, // Filed Cases
+      { wch: 20 }, // Complainant
+      { wch: 25 }, // Nature
+      { wch: 30 }, // Remarks
+      { wch: 12 }, // Status
+    ];
+    ws["!cols"] = colWidths;
+
+    // Style the header row
+    const headerRange = XLSX.utils.decode_range(ws["!ref"] || "A1");
+    for (let col = headerRange.s.c; col <= headerRange.e.c; col++) {
+      const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
+      if (!ws[cellAddress]) continue;
+
+      ws[cellAddress].s = {
+        font: { bold: true, color: { rgb: "FFFFFF" } },
+        fill: { fgColor: { rgb: "4F46E5" } },
+        alignment: { horizontal: "center", vertical: "center" },
+      };
+    }
+
+    // Add the worksheet to workbook
+    XLSX.utils.book_append_sheet(wb, ws, `Cases_${currentYear}`);
+
+    // Generate and download the file
+    const fileName = `cases_${new Date().toISOString().split("T")[0]}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+
+    showAlert(`✅ Excel file "${fileName}" exported successfully!`);
+  };
+
+  const getNextCaseNumber = () => {
+    if (cases.length === 0) return "1";
+
+    // Get all case numbers from existing cases
+    const allCaseNumbers = cases
+      .flat()
+      .map((row) => row.caseNo)
+      .filter((caseNo) => caseNo && !isNaN(Number(caseNo)))
+      .map((caseNo) => parseInt(caseNo));
+
+    if (allCaseNumbers.length === 0) return "1";
+
+    const maxCaseNumber = Math.max(...allCaseNumbers);
+    return String(maxCaseNumber + 1);
+  };
+
+  const handleAddNewCase = () => {
+    navigate("/add-new-case");
   };
 
   return (
@@ -896,6 +1089,15 @@ export const Dashboard: React.FC = () => {
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div className="flex flex-wrap gap-4 flex-1">
                     <button
+                      onClick={handleAddNewCase}
+                      className="flex-1 min-w-[140px] bg-white text-slate-700 p-5 rounded-2xl font-bold border border-slate-100 shadow-sm hover:shadow-md hover:border-rose-200 transition-all flex items-center justify-center gap-3 group"
+                    >
+                      <div className="w-10 h-10 bg-rose-50 text-rose-500 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform">
+                        <FileText size={20} />
+                      </div>
+                      Add New Case
+                    </button>
+                    <button
                       onClick={() => fileInputRef.current?.click()}
                       className="flex-1 min-w-[140px] bg-white text-slate-700 p-5 rounded-2xl font-bold border border-slate-100 shadow-sm hover:shadow-md hover:border-emerald-200 transition-all flex items-center justify-center gap-3 group"
                     >
@@ -929,49 +1131,6 @@ export const Dashboard: React.FC = () => {
                       title="Print Cases"
                     >
                       <Printer size={24} />
-                    </button>
-                    <button
-                      onClick={() => {
-                        const csvContent =
-                          "data:text/csv;charset=utf-8," +
-                          [
-                            "Case No.,Program,Name,Address,Filed,Complainant,Nature,Remarks,Status",
-                          ]
-                            .concat(
-                              cases
-                                .flat()
-                                .map((r) =>
-                                  [
-                                    r.caseNo,
-                                    r.program,
-                                    r.name,
-                                    r.address,
-                                    r.filedCases,
-                                    r.complainant,
-                                    r.nature,
-                                    r.remarks,
-                                    r.status,
-                                  ]
-                                    .map((v) => `"${v.replace(/"/g, '""')}"`)
-                                    .join(","),
-                                ),
-                            )
-                            .join("\n");
-                        const encodedUri = encodeURI(csvContent);
-                        const link = document.createElement("a");
-                        link.setAttribute("href", encodedUri);
-                        link.setAttribute(
-                          "download",
-                          `cases_${currentYear || "export"}.csv`,
-                        );
-                        document.body.appendChild(link);
-                        link.click();
-                        document.body.removeChild(link);
-                      }}
-                      className="w-14 h-14 bg-white text-slate-700 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:text-emerald-500 transition-all flex items-center justify-center"
-                      title="Export to CSV"
-                    >
-                      <FileSpreadsheet size={24} />
                     </button>
                   </div>
                 </div>
@@ -1028,181 +1187,424 @@ export const Dashboard: React.FC = () => {
                         </button>
                       </div>
                       <button
-                        onClick={() => window.print()}
-                        className="bg-white border border-slate-200 text-slate-700 px-6 py-3.5 rounded-2xl font-bold flex items-center gap-2 hover:bg-slate-50 transition-all shadow-sm"
+                        onClick={() => {
+                          console.log("=== DEBUG: Excel Export ===");
+                          console.log("Current year:", currentYear);
+                          console.log("Cases data:", cases);
+
+                          // Flatten all case rows
+                          const allRows = cases.flat();
+                          console.log("Flattened rows:", allRows);
+                          console.log("Total case groups:", cases.length);
+                          console.log("Total individual rows:", allRows.length);
+
+                          // Create worksheet data
+                          const worksheetData = [
+                            [
+                              "Case No.",
+                              "Program",
+                              "Name",
+                              "Address",
+                              "Filed Cases",
+                              "Complainant",
+                              "Nature",
+                              "Remarks",
+                              "Status",
+                            ],
+                            ...allRows.map((row) => [
+                              row.caseNo,
+                              row.program,
+                              row.name.replace(/◼/g, ""), // Remove bullet markers from name
+                              row.address.replace(/◼/g, ""), // Remove bullet markers from address
+                              row.filedCases,
+                              row.complainant.replace(/◼/g, ""), // Remove bullet markers from complainant
+                              row.nature.replace(/◼/g, ""), // Remove bullet markers from nature
+                              row.remarks.replace(/◼/g, ""), // Remove bullet markers from remarks
+                              row.status,
+                            ]),
+                          ];
+
+                          // Create workbook and worksheet
+                          const wb = XLSX.utils.book_new();
+                          const ws = XLSX.utils.aoa_to_sheet(worksheetData);
+
+                          // Set column widths
+                          const colWidths = [
+                            { wch: 15 }, // Case No.
+                            { wch: 20 }, // Program
+                            { wch: 25 }, // Name
+                            { wch: 30 }, // Address
+                            { wch: 15 }, // Filed Cases
+                            { wch: 20 }, // Complainant
+                            { wch: 25 }, // Nature
+                            { wch: 30 }, // Remarks
+                            { wch: 12 }, // Status
+                          ];
+                          ws["!cols"] = colWidths;
+
+                          // Style the header row
+                          const headerRange = XLSX.utils.decode_range(
+                            ws["!ref"] || "A1",
+                          );
+                          for (
+                            let col = headerRange.s.c;
+                            col <= headerRange.e.c;
+                            col++
+                          ) {
+                            const cellAddress = XLSX.utils.encode_cell({
+                              r: 0,
+                              c: col,
+                            });
+                            if (!ws[cellAddress]) ws[cellAddress] = {};
+                            ws[cellAddress].s = {
+                              font: { bold: true },
+                              fill: { fgColor: { rgb: "FFE6E6" } },
+                              alignment: { horizontal: "center" },
+                            };
+                          }
+
+                          // Add worksheet to workbook
+                          XLSX.utils.book_append_sheet(wb, ws, "Cases");
+
+                          // Generate filename with current year only
+                          const today = new Date().toISOString().split("T")[0]; // Gets YYYY-MM-DD
+                          // Extract just the year part from currentYear (in case it contains full date)
+                          const yearOnly = currentYear.includes("-")
+                            ? currentYear.split("-")[0]
+                            : currentYear;
+                          const filename = `cases_${yearOnly || "export"}_${today}.xlsx`;
+                          console.log("Export filename:", filename);
+                          console.log("Current year full:", currentYear);
+                          console.log("Current year extracted:", yearOnly);
+
+                          // Save the file
+                          XLSX.writeFile(wb, filename);
+                          showAlert(`✅ Excel exported successfully!`);
+                        }}
+                        className="w-14 h-14 bg-white text-slate-700 rounded-2xl border border-slate-100 shadow-sm hover:shadow-md hover:text-emerald-500 transition-all flex items-center justify-center"
+                        title="Export to Excel"
                       >
-                        <FileText size={18} className="text-rose-500" /> Export
-                        PDF
+                        <FileSpreadsheet size={20} />
                       </button>
                     </div>
                   </div>
                 </div>
 
-                {/* Table */}
-                <div className="overflow-x-auto print-table">
-                  <table
-                    className="w-full border-collapse min-w-[1200px]"
-                    id="caseTable"
-                  >
+                {/* Print-specific view - only visible when printing */}
+                <div className="hidden print:block">
+                  <div className="text-center mb-6">
+                    <h1 className="text-2xl font-bold mb-2">
+                      Case Management Report
+                    </h1>
+                    <p className="text-sm text-gray-600">
+                      Year: {currentYear} | Date:{" "}
+                      {new Date().toLocaleDateString()}
+                    </p>
+                  </div>
+                  <table className="w-full border-collapse">
                     <thead>
-                      <tr className="table-header">
-                        <th className="p-4 text-center w-[5%]">Case No.</th>
-                        <th className="p-4 text-center w-[7%]">Program</th>
-                        <th className="p-4 text-left w-[12%]">Name</th>
-                        <th className="p-4 text-left w-[12%]">Address</th>
-                        <th className="p-4 text-center w-[5%]">Filed</th>
-                        <th className="p-4 text-left w-[18%]">Complainant</th>
-                        <th className="p-4 text-left w-[14%]">Nature</th>
-                        <th className="p-4 text-left w-[15%]">Remarks</th>
-                        <th className="p-4 text-center w-[8%]">Status</th>
-                        <th className="p-4 text-center w-[4%] no-print">
-                          Actions
+                      <tr className="border-b-2 border-black">
+                        <th className="p-4 text-center w-[5%] font-bold">
+                          Case No.
+                        </th>
+                        <th className="p-4 text-center w-[7%] font-bold">
+                          Program
+                        </th>
+                        <th className="p-4 text-left w-[12%] font-bold">
+                          Name
+                        </th>
+                        <th className="p-4 text-left w-[12%] font-bold">
+                          Address
+                        </th>
+                        <th className="p-4 text-center w-[8%] font-bold">
+                          Filed Cases
+                        </th>
+                        <th className="p-4 text-left w-[12%] font-bold">
+                          Complainant
+                        </th>
+                        <th className="p-4 text-left w-[15%] font-bold">
+                          Nature
+                        </th>
+                        <th className="p-4 text-left w-[15%] font-bold">
+                          Remarks
+                        </th>
+                        <th className="p-4 text-center w-[8%] font-bold">
+                          Status
                         </th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {currentGroups.length === 0 ? (
-                        <tr>
-                          <td colSpan={10} className="p-0">
-                            <div className="flex flex-col items-center justify-center h-[500px] text-center p-10 bg-slate-50/20">
-                              <div className="w-24 h-24 bg-white rounded-3xl shadow-sm flex items-center justify-center text-4xl mb-6">
-                                {filterTerm ? "🔍" : "🌱"}
-                              </div>
-                              <h3 className="text-2xl font-bold text-slate-800 mb-2">
-                                {filterTerm
-                                  ? `No matches for "${filterTerm}"`
-                                  : `No records found for ${currentYear}`}
-                              </h3>
-                              <p className="text-slate-700 max-w-md mx-auto leading-relaxed">
-                                {filterTerm
-                                  ? "Try checking your spelling or use a broader keyword to find what you are looking for."
-                                  : "This year is currently empty. Start by uploading a case data file or adding a new record."}
-                              </p>
-                            </div>
-                          </td>
-                        </tr>
-                      ) : (
-                        currentGroups.map((group, gIdx) => (
+                    <tbody>
+                      {cases
+                        .filter(
+                          (group) =>
+                            group &&
+                            group.length > 0 &&
+                            group[0]?.caseNo &&
+                            (!filterTerm ||
+                              group.some((row) =>
+                                Object.values(row).some((v) =>
+                                  String(v)
+                                    .toLowerCase()
+                                    .includes(filterTerm.toLowerCase()),
+                                ),
+                              )),
+                        )
+                        .map((group, gIdx) => (
                           <React.Fragment key={gIdx}>
                             {group.map((row, rIdx) => (
                               <tr
                                 key={rIdx}
-                                className={`group hover:bg-slate-50/50 transition-colors ${rIdx === 0 ? "border-t-2 border-slate-200" : ""}`}
+                                className="border-b border-gray-300"
                               >
-                                {rIdx === 0 && (
-                                  <>
-                                    <td
-                                      rowSpan={group.length}
-                                      className="table-cell font-mono font-medium text-slate-900 text-center bg-slate-50/30"
-                                    >
-                                      {highlightText(row.caseNo, filterTerm)}
-                                    </td>
-                                    <td
-                                      rowSpan={group.length}
-                                      className="table-cell text-center font-semibold text-rose-500"
-                                    >
-                                      {highlightText(row.program, filterTerm)}
-                                    </td>
-                                    <td
-                                      rowSpan={group.length}
-                                      className="table-cell font-bold text-slate-800"
-                                    >
-                                      {highlightText(row.name, filterTerm)}
-                                    </td>
-                                    <td
-                                      rowSpan={group.length}
-                                      className="table-cell text-slate-700 italic"
-                                    >
-                                      {highlightText(row.address, filterTerm)}
-                                    </td>
-                                    <td
-                                      rowSpan={group.length}
-                                      className="table-cell text-center font-medium"
-                                    >
-                                      {highlightText(
-                                        row.filedCases,
-                                        filterTerm,
-                                      )}
-                                    </td>
-                                  </>
-                                )}
-                                <td className="table-cell">
-                                  {formatWithGaps(row.complainant, filterTerm)}
+                                <td className="p-2 text-center font-mono font-bold border-r border-gray-300 text-xs">
+                                  {row.caseNo}
                                 </td>
-                                <td className="table-cell">
+                                <td className="p-2 text-center font-semibold border-r border-gray-300 text-xs">
+                                  {row.program}
+                                </td>
+                                <td className="p-2 font-bold border-r border-gray-300 text-xs">
+                                  {row.name}
+                                </td>
+                                <td className="p-2 italic border-r border-gray-300 text-xs">
+                                  {row.address}
+                                </td>
+                                <td className="p-2 text-center border-r border-gray-300 text-xs">
+                                  {row.filedCases}
+                                </td>
+                                <td className="p-2 border-r border-gray-300 text-xs">
+                                  {row.complainant}
+                                </td>
+                                <td className="p-2 border-r border-gray-300 text-xs">
                                   {formatWithGaps(row.nature, filterTerm)}
                                 </td>
-                                {rIdx === 0 && (
-                                  <>
-                                    <td
-                                      rowSpan={group.length}
-                                      className="table-cell"
-                                    >
-                                      {formatWithGaps(row.remarks, filterTerm)}
-                                    </td>
-                                    <td
-                                      rowSpan={group.length}
-                                      className="table-cell text-center"
-                                    >
-                                      <span
-                                        className={`inline-flex px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
-                                          row.status
-                                            .toLowerCase()
-                                            .includes("pending")
-                                            ? "bg-rose-50 text-rose-600 border border-rose-100"
-                                            : row.status
-                                                  .toLowerCase()
-                                                  .includes("resolved")
-                                              ? "bg-emerald-50 text-emerald-600 border border-emerald-100"
-                                              : "bg-slate-50 text-slate-700 border border-slate-100"
-                                        }`}
-                                      >
-                                        {row.status}
-                                      </span>
-                                    </td>
-                                    <td
-                                      rowSpan={group.length}
-                                      className="table-cell text-center no-print"
-                                    >
-                                      <div className="flex flex-col gap-2 items-center">
-                                        <button
-                                          onClick={() => setEditingGroup(group)}
-                                          className="w-full px-3 py-2 bg-white border border-slate-200 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-50 hover:border-rose-200 hover:text-rose-600 transition-all shadow-sm"
-                                        >
-                                          Edit
-                                        </button>
-                                        <button
-                                          onClick={async () => {
-                                            if (
-                                              await showConfirm(
-                                                "Delete this entire case block?",
-                                              )
-                                            ) {
-                                              const updatedCases = cases.filter(
-                                                (g) => g !== group,
-                                              );
-                                              setCases(updatedCases);
-                                              localStorage.setItem(
-                                                `cases_${currentYear}`,
-                                                JSON.stringify(updatedCases),
-                                              );
-                                            }
-                                          }}
-                                          className="w-full px-3 py-2 bg-rose-50 text-rose-600 rounded-xl text-xs font-bold hover:bg-rose-100 transition-all"
-                                        >
-                                          Delete
-                                        </button>
-                                      </div>
-                                    </td>
-                                  </>
-                                )}
+                                <td className="p-2 border-r border-gray-300 text-xs">
+                                  {formatWithGaps(row.remarks, filterTerm)}
+                                </td>
+                                <td className="p-2 text-center text-xs">
+                                  <span
+                                    className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                                      row.status === "RESOLVED"
+                                        ? "bg-emerald-100 text-emerald-700"
+                                        : row.status === "DISMISSED"
+                                          ? "bg-rose-100 text-rose-700"
+                                          : "bg-gray-900 text-white" // Black background for PENDING cases
+                                    }`}
+                                  >
+                                    {row.status}
+                                  </span>
+                                </td>
                               </tr>
                             ))}
                           </React.Fragment>
-                        ))
-                      )}
+                        ))}
                     </tbody>
                   </table>
+                  <div className="text-center mt-6 text-sm text-gray-600">
+                    <p>End of Report</p>
+                    <p>Generated on {new Date().toLocaleString()}</p>
+                  </div>
+                </div>
+
+                {/* Regular view - hidden when printing */}
+                <div className="print:hidden">
+                  <div className="overflow-x-auto print-table">
+                    <table
+                      className="w-full border-collapse min-w-[1200px]"
+                      id="caseTable"
+                    >
+                      <thead>
+                        <tr className="table-header">
+                          <th className="p-2 text-center w-[4%] font-bold text-xs">
+                            No.
+                          </th>
+                          <th className="p-2 text-center w-[6%] font-bold text-xs">
+                            Program
+                          </th>
+                          <th className="p-2 text-left w-[10%] font-bold text-xs">
+                            Name
+                          </th>
+                          <th className="p-2 text-left w-[10%] font-bold text-xs">
+                            Address
+                          </th>
+                          <th className="p-2 text-center w-[6%] font-bold text-xs">
+                            Filed
+                          </th>
+                          <th className="p-2 text-left w-[10%] font-bold text-xs">
+                            Complainant
+                          </th>
+                          <th className="p-2 text-left w-[12%] font-bold text-xs">
+                            Nature
+                          </th>
+                          <th className="p-2 text-left w-[12%] font-bold text-xs">
+                            Remarks
+                          </th>
+                          <th className="p-2 text-center w-[6%] font-bold text-xs">
+                            Status
+                          </th>
+                          <th className="p-4 text-center w-[4%] no-print">
+                            Actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {currentGroups.length === 0 ? (
+                          <tr>
+                            <td colSpan={10} className="p-0">
+                              <div className="flex flex-col items-center justify-center h-[500px] text-center p-10 bg-slate-50/20">
+                                <div className="w-24 h-24 bg-white rounded-3xl shadow-sm flex items-center justify-center text-4xl mb-6">
+                                  {filterTerm ? "🔍" : "🌱"}
+                                </div>
+                                <h3 className="text-2xl font-bold text-slate-800 mb-2">
+                                  {filterTerm
+                                    ? `No matches for "${filterTerm}"`
+                                    : `No records found for ${currentYear}`}
+                                </h3>
+                                <p className="text-slate-700 max-w-md mx-auto leading-relaxed">
+                                  {filterTerm
+                                    ? "Try checking your spelling or use a broader keyword to find what you are looking for."
+                                    : "This year is currently empty. Start by uploading a case data file or adding a new record."}
+                                </p>
+                              </div>
+                            </td>
+                          </tr>
+                        ) : (
+                          currentGroups.map((group, gIdx) => (
+                            <React.Fragment key={gIdx}>
+                              {group.map((row, rIdx) => (
+                                <tr
+                                  key={rIdx}
+                                  className={`group hover:bg-slate-50/50 transition-colors ${rIdx === 0 ? "border-t-2 border-slate-200" : ""} ${
+                                    rIdx === 0 &&
+                                    localStorage.getItem("newCaseNumber") ===
+                                      row.caseNo
+                                      ? "bg-emerald-50 animate-pulse border-emerald-300"
+                                      : ""
+                                  }`}
+                                >
+                                  {rIdx === 0 && (
+                                    <>
+                                      <td
+                                        rowSpan={group.length}
+                                        className="table-cell font-mono font-medium text-slate-900 text-center bg-slate-50/30"
+                                      >
+                                        {highlightText(row.caseNo, filterTerm)}
+                                      </td>
+                                      <td
+                                        rowSpan={group.length}
+                                        className="table-cell text-center font-semibold text-rose-500"
+                                      >
+                                        {highlightText(row.program, filterTerm)}
+                                      </td>
+                                      <td
+                                        rowSpan={group.length}
+                                        className="table-cell font-bold text-slate-800"
+                                      >
+                                        {highlightText(row.name, filterTerm)}
+                                      </td>
+                                      <td
+                                        rowSpan={group.length}
+                                        className="table-cell text-slate-700 italic"
+                                      >
+                                        {highlightText(row.address, filterTerm)}
+                                      </td>
+                                      <td
+                                        rowSpan={group.length}
+                                        className="table-cell text-center font-medium"
+                                      >
+                                        {highlightText(
+                                          row.filedCases,
+                                          filterTerm,
+                                        )}
+                                      </td>
+                                    </>
+                                  )}
+                                  <td className="table-cell">
+                                    {formatWithGaps(
+                                      row.complainant,
+                                      filterTerm,
+                                    )}
+                                  </td>
+                                  <td className="table-cell">
+                                    {formatWithGaps(row.nature, filterTerm)}
+                                  </td>
+                                  {rIdx === 0 && (
+                                    <>
+                                      <td
+                                        rowSpan={group.length}
+                                        className="table-cell"
+                                      >
+                                        {formatWithGaps(
+                                          row.remarks,
+                                          filterTerm,
+                                        )}
+                                      </td>
+                                      <td
+                                        rowSpan={group.length}
+                                        className="table-cell text-center"
+                                      >
+                                        <span
+                                          className={`inline-flex px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                                            row.status
+                                              .toLowerCase()
+                                              .includes("pending")
+                                              ? "bg-yellow-50 text-yellow-700 border border-yellow-100"
+                                              : row.status
+                                                    .toLowerCase()
+                                                    .includes("resolved")
+                                                ? "bg-emerald-50 text-emerald-700 border border-emerald-100"
+                                                : "bg-red-50 text-red-700 border border-red-100"
+                                          }`}
+                                        >
+                                          {row.status}
+                                        </span>
+                                      </td>
+                                      <td
+                                        rowSpan={group.length}
+                                        className="table-cell text-center no-print"
+                                      >
+                                        <div className="flex flex-col gap-2 items-center">
+                                          <button
+                                            onClick={() =>
+                                              handleEditCase(group)
+                                            }
+                                            className="w-full px-3 py-2 bg-white border border-slate-200 text-slate-700 rounded-xl text-xs font-bold hover:bg-slate-50 hover:border-rose-200 hover:text-rose-600 transition-all shadow-sm"
+                                          >
+                                            Edit
+                                          </button>
+                                          <button
+                                            onClick={async () => {
+                                              if (
+                                                await showConfirm(
+                                                  "Delete this entire case block?",
+                                                )
+                                              ) {
+                                                const updatedCases =
+                                                  cases.filter(
+                                                    (g) => g !== group,
+                                                  );
+                                                setCases(updatedCases);
+                                                localStorage.setItem(
+                                                  `cases_${currentYear}`,
+                                                  JSON.stringify(updatedCases),
+                                                );
+                                              }
+                                            }}
+                                            className="w-full px-3 py-2 bg-rose-50 text-rose-600 rounded-xl text-xs font-bold hover:bg-rose-100 transition-all"
+                                          >
+                                            Delete
+                                          </button>
+                                        </div>
+                                      </td>
+                                    </>
+                                  )}
+                                </tr>
+                              ))}
+                            </React.Fragment>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
             )}
@@ -1558,10 +1960,10 @@ export const Dashboard: React.FC = () => {
                                 key={status}
                                 className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                                   status === "DISMISSED"
-                                    ? "bg-rose-100 text-rose-600"
+                                    ? "bg-red-100 text-red-700"
                                     : status === "PENDING"
-                                      ? "bg-amber-100 text-amber-600"
-                                      : "bg-emerald-100 text-emerald-600"
+                                      ? "bg-yellow-100 text-yellow-700"
+                                      : "bg-emerald-100 text-emerald-700"
                                 }`}
                               >
                                 {status}
@@ -1615,12 +2017,12 @@ export const Dashboard: React.FC = () => {
                                       row.status
                                         .toLowerCase()
                                         .includes("pending")
-                                        ? "bg-rose-50 text-rose-600 border border-rose-100"
+                                        ? "bg-yellow-50 text-yellow-700 border border-yellow-100"
                                         : row.status
                                               .toLowerCase()
                                               .includes("resolved")
-                                          ? "bg-emerald-50 text-emerald-600 border border-emerald-100"
-                                          : "bg-slate-50 text-slate-600 border border-slate-100"
+                                          ? "bg-emerald-50 text-emerald-700 border border-emerald-100"
+                                          : "bg-red-50 text-red-700 border border-red-100"
                                     }`}
                                   >
                                     {row.status}
@@ -1819,135 +2221,6 @@ export const Dashboard: React.FC = () => {
                   Understood
                 </button>
               )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Block Editor Modal */}
-      {editingGroup && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-[5000] flex items-center justify-center p-4 md:p-10">
-          <div className="bg-white w-full h-full flex flex-col rounded-[40px] overflow-hidden shadow-2xl border border-white/20 animate-fade-in">
-            <div className="p-8 bg-slate-50/80 backdrop-blur-sm flex flex-col md:flex-row justify-between items-center border-b border-slate-200 gap-6">
-              <div>
-                <h3 className="text-3xl font-bold text-slate-800 tracking-tight">
-                  Spreadsheet Editor
-                </h3>
-                <p className="text-slate-500 mt-1">
-                  Directly edit case block details in a grid view.
-                </p>
-              </div>
-              <div className="flex gap-4 w-full md:w-auto">
-                <button
-                  onClick={() => {
-                    const rows = Array.from(
-                      document.querySelectorAll("#editorTable tbody tr"),
-                    );
-                    const updated = rows.map((tr) => {
-                      const obj: any = {};
-                      tr.querySelectorAll("textarea").forEach(
-                        (ta: any) => (obj[ta.dataset.field] = ta.value),
-                      );
-                      tr.querySelectorAll("select").forEach(
-                        (sel: any) => (obj[sel.dataset.field] = sel.value),
-                      );
-                      const allowed = ["DISMISSED", "PENDING", "RESOLVED"];
-                      const raw = String(obj.status ?? "").toUpperCase();
-                      const match = raw.match(/DISMISSED|PENDING|RESOLVED/);
-                      obj.status =
-                        match && allowed.includes(match[0])
-                          ? match[0]
-                          : "PENDING";
-                      return obj as CaseRow;
-                    });
-                    handleSaveEditor(updated);
-                  }}
-                  className="flex-1 md:flex-none px-10 py-4 bg-rose-500 text-white rounded-2xl font-bold shadow-lg shadow-rose-200 hover:bg-rose-600 transition-all"
-                >
-                  Save Changes
-                </button>
-                <button
-                  onClick={() => setEditingGroup(null)}
-                  className="flex-1 md:flex-none px-10 py-4 bg-white border border-slate-200 text-slate-600 rounded-2xl font-bold hover:bg-slate-50 transition-all"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 overflow-auto bg-slate-50/30">
-              <table className="w-full border-collapse" id="editorTable">
-                <thead className="sticky top-0 bg-white z-10 shadow-sm">
-                  <tr>
-                    {[
-                      "Case No.",
-                      "Program",
-                      "Name",
-                      "Address",
-                      "Filed",
-                      "Complainant",
-                      "Nature",
-                      "Remarks",
-                      "Status",
-                    ].map((h) => (
-                      <th
-                        key={h}
-                        className="p-5 text-left text-[11px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100"
-                      >
-                        {h}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {editingGroup.map((row, rIdx) => (
-                    <tr
-                      key={rIdx}
-                      className="bg-white hover:bg-slate-50/50 transition-colors"
-                    >
-                      {[
-                        "caseNo",
-                        "program",
-                        "name",
-                        "address",
-                        "filedCases",
-                        "complainant",
-                        "nature",
-                        "remarks",
-                        "status",
-                      ].map((f) => (
-                        <td key={f} className="p-4 align-top">
-                          {f === "status" ? (
-                            <select
-                              defaultValue={
-                                String(row[f as keyof CaseRow] ?? "")
-                                  .toUpperCase()
-                                  .match(/DISMISSED|PENDING|RESOLVED/)?.[0] ??
-                                "PENDING"
-                              }
-                              data-field={f}
-                              className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-slate-700 cursor-pointer outline-none focus:ring-4 focus:ring-rose-500/5 transition-all"
-                            >
-                              <option value="DISMISSED">DISMISSED</option>
-                              <option value="PENDING">PENDING</option>
-                              <option value="RESOLVED">RESOLVED</option>
-                            </select>
-                          ) : (
-                            <textarea
-                              defaultValue={row[f as keyof CaseRow]
-                                .split("◼")
-                                .filter((p) => p.trim() !== "")
-                                .map((p) => "◼ " + p.trim())
-                                .join("\n")}
-                              data-field={f}
-                              className="w-full min-h-[140px] p-4 bg-slate-50 border border-slate-200 rounded-2xl text-sm text-slate-600 font-sans resize-y outline-none focus:bg-white focus:ring-4 focus:ring-rose-500/5 transition-all whitespace-pre-wrap leading-relaxed"
-                            />
-                          )}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
           </div>
         </div>
